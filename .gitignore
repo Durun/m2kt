@@ -23,3 +23,6 @@ go.work.sum
 
 # DB
 *.sqlite
+
+# build output
+/dist
