@@ -11,8 +11,10 @@ import (
 
 func main() {
 	cmds := map[string]func(ctx context.Context, args []string) error{
-		"fetch-video": fetchVideoCmd,
-		"dump-video":  dumpVideoCmd,
+		"fetch-video":        fetchVideoCmd,
+		"dump-video":         dumpVideoCmd,
+		"index-video":        indexVideoCmd,
+		"dump-indexed-video": dumpIndexedVideoCmd,
 	}
 	cmdNames := make([]string, 0, len(cmds))
 	for name := range cmds {
