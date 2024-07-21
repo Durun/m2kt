@@ -45,7 +45,7 @@ func fetchVideoCmd(ctx context.Context, args []string) error {
 	}
 	defer db.Close()
 
-	store := sqlite.NewVideoStore(db)
+	store := sqlite.NewRawStore(db)
 	if err := store.Prepare(ctx); err != nil {
 		return errors.WithStack(err)
 	}
