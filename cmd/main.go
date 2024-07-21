@@ -15,6 +15,8 @@ func main() {
 		"dump-video":         dumpVideoCmd,
 		"index-video":        indexVideoCmd,
 		"dump-indexed-video": dumpIndexedVideoCmd,
+		"fetch-channel":      fetchChannelCmd,
+		"dump-channel":       dumpChannelCmd,
 	}
 	cmdNames := make([]string, 0, len(cmds))
 	for name := range cmds {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"time"
 
 	"github.com/pkg/errors"
 	"github.com/wroge/superbasic"
@@ -30,12 +31,23 @@ func (s *RawStore) Prepare(ctx context.Context) error {
 		return nil
 	}
 
-	_, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS videos_raw (
-		videoId TEXT PRIMARY KEY,
-		json TEXT NOT NULL
-	)`)
-	if err != nil {
-		return errors.WithStack(err)
+	sqls := []string{
+		`CREATE TABLE IF NOT EXISTS videos_raw (
+			videoId TEXT PRIMARY KEY,
+			json TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS channels_raw (
+			channelId TEXT PRIMARY KEY,
+			fetchedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			json TEXT NOT NULL
+		)`,
+	}
+
+	for _, query := range sqls {
+		_, err := s.db.ExecContext(ctx, query)
+		if err != nil {
+			return errors.WithStack(err)
+		}
 	}
 
 	s.prepared = true
@@ -128,4 +140,96 @@ func (s *RawStore) DumpVideos(ctx context.Context) <-chan either.Either[*youtube
 	}()
 
 	return ch
+}
+
+func (s *RawStore) WriteChannels(ctx context.Context, fetchedAt time.Time, channels []*youtube.Channel) error {
+	if err := s.Prepare(ctx); err != nil {
+		return err
+	}
+
+	values := make([]superbasic.Expression, 0, len(channels))
+	for _, channel := range channels {
+		bytes, err := channel.MarshalJSON()
+		if err != nil {
+			return errors.WithStack(err)
+		}
+
+		fetchedAtStr := fetchedAt.UTC().Format(time.DateTime)
+		values = append(values, superbasic.SQL(`(?,?,?)`,
+			channel.Id,
+			fetchedAtStr,
+			string(bytes),
+		))
+	}
+
+	_, err := util.DoExpr(ctx, s.db.ExecContext, superbasic.Compile(`
+		INSERT INTO channels_raw (channelId, fetchedAt, json)
+		VALUES ?
+		ON CONFLICT(channelId) DO UPDATE SET json=excluded.json, fetchedAt=excluded.fetchedAt`,
+		superbasic.Join(`,`, values...),
+	))
+	return err
+}
+
+func (s *RawStore) DumpChannels(ctx context.Context) <-chan either.Either[*youtube.Channel] {
+	ch := make(chan either.Either[*youtube.Channel])
+
+	go func() {
+		rows, err := util.DoExpr(ctx, s.db.QueryContext, superbasic.Compile(`
+		SELECT json FROM channels_raw`,
+		))
+		if err != nil {
+			ch <- either.ErrorOf[*youtube.Channel](err)
+			close(ch)
+			return
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var jsonStr string
+			if err := rows.Scan(&jsonStr); err != nil {
+				ch <- either.ErrorOf[*youtube.Channel](err)
+				break
+			}
+
+			value := new(youtube.Channel)
+			if err := json.Unmarshal([]byte(jsonStr), value); err != nil {
+				ch <- either.ErrorOf[*youtube.Channel](err)
+				break
+			}
+
+			ch <- either.Of(value)
+		}
+
+		close(ch)
+	}()
+
+	return ch
+}
+
+func (s *RawStore) ListChannelIDs(ctx context.Context, channelIDs []string) ([]string, error) {
+	rows, err := util.DoExpr(ctx, s.db.QueryContext, superbasic.Compile(`
+		SELECT channelId
+		FROM channels_raw
+		WHERE channelId IN (?)`,
+		superbasic.Join(`,`,
+			superbasic.Map(channelIDs,
+				func(_ int, id string) superbasic.Expression { return superbasic.Value(id) },
+			)...,
+		),
+	))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	ids := make([]string, 0, len(channelIDs))
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, errors.WithStack(err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
 }
