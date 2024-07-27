@@ -10,7 +10,7 @@ import (
 
 	"github.com/Durun/m2kt/internal/entity"
 	"github.com/Durun/m2kt/internal/util"
-	"github.com/Durun/m2kt/internal/util/either"
+	"github.com/Durun/m2kt/pkg/chu"
 )
 
 func NewIndexedStore(db *sql.DB) *IndexedStore {
@@ -94,10 +94,8 @@ func (s *IndexedStore) WriteVideos(ctx context.Context, videos []entity.Video) e
 	return err
 }
 
-func (s *IndexedStore) DumpVideos(ctx context.Context, where, orderby string) <-chan either.Either[entity.Video] {
-	ch := make(chan either.Either[entity.Video])
-
-	go func() {
+func (s *IndexedStore) DumpVideos(ctx context.Context, where, orderby string) chu.ReadChan[entity.Video] {
+	return chu.GenerateContext(ctx, func(ctx context.Context, out chu.WriteChan[entity.Video]) {
 		rows, err := util.DoExpr(ctx, s.db.QueryContext, superbasic.Compile(`
 			SELECT videoId, channelId, date, time, title, description, thumbnailURL, eTag
 			FROM videos
@@ -106,8 +104,7 @@ func (s *IndexedStore) DumpVideos(ctx context.Context, where, orderby string) <-
 			superbasic.If(orderby != "", superbasic.SQL(`ORDER BY `+orderby)),
 		))
 		if err != nil {
-			ch <- either.ErrorOf[entity.Video](errors.WithStack(err))
-			close(ch)
+			out.PushError(errors.WithStack(err))
 			return
 		}
 		defer rows.Close()
@@ -126,21 +123,17 @@ func (s *IndexedStore) DumpVideos(ctx context.Context, where, orderby string) <-
 				&video.ETag,
 			)
 			if err != nil {
-				ch <- either.ErrorOf[entity.Video](errors.WithStack(err))
+				out.PushError(errors.WithStack(err))
 				break
 			}
 
 			video.PublishedAt, err = time.Parse(time.DateTime, dateStr+" "+timeStr)
 			if err != nil {
-				ch <- either.ErrorOf[entity.Video](errors.WithStack(err))
+				out.PushError(errors.WithStack(err))
 				break
 			}
 
-			ch <- either.Of(video)
+			out.PushValue(video)
 		}
-
-		close(ch)
-	}()
-
-	return ch
+	})
 }

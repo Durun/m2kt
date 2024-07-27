@@ -10,7 +10,6 @@ import (
 	"github.com/Durun/m2kt/internal/entity"
 	"github.com/Durun/m2kt/internal/impl/file"
 	"github.com/Durun/m2kt/internal/impl/sqlite"
-	"github.com/Durun/m2kt/internal/util/either"
 )
 
 func indexVideoCmd(ctx context.Context, args []string) error {
@@ -31,13 +30,16 @@ func indexVideoCmd(ctx context.Context, args []string) error {
 	defer db.Close()
 	store := sqlite.NewIndexedStore(db)
 
-	for rawVideos := range either.Chunked(reader.DumpVideos(ctx), 1000) {
-		if rawVideos.Err != nil {
-			return errors.WithStack(rawVideos.Err)
+	rawVideos := reader.DumpVideos(ctx)
+	defer rawVideos.RequestClose()
+	for rawVideos := range rawVideos.Chunked(1000) {
+		rawVideos, err := rawVideos.Get()
+		if err != nil {
+			return errors.WithStack(err)
 		}
 
-		videos := make([]entity.Video, 0, len(rawVideos.Value))
-		for _, rawVideo := range rawVideos.Value {
+		videos := make([]entity.Video, 0, len(rawVideos))
+		for _, rawVideo := range rawVideos {
 			video, err := entity.NewVideoFromSearchResult(rawVideo)
 			if err != nil {
 				return errors.WithStack(err)

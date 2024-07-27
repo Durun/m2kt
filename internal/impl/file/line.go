@@ -2,46 +2,37 @@ package file
 
 import (
 	"bufio"
+	"context"
 	"io"
 
 	"github.com/pkg/errors"
 
-	"github.com/Durun/m2kt/internal/util/either"
+	"github.com/Durun/m2kt/pkg/chu"
 )
 
-func NewLineReader(r io.Reader) *LineReader {
-	return &LineReader{
-		r: bufio.NewReader(r),
-	}
-}
-
-type LineReader struct {
-	r *bufio.Reader
-}
-
-func (r LineReader) Lines() <-chan either.Either[string] {
-	ch := make(chan either.Either[string])
-
-	go func() {
-		defer close(ch)
-
+func NewLineReader(r io.Reader) chu.ReadChan[string] {
+	return chu.Generate(func(ctx context.Context, out chu.WriteChan[string]) {
+		buf := bufio.NewReader(r)
 		for {
-			line, _, err := r.r.ReadLine()
-			if err != nil {
-				if err == io.EOF {
-					break
-				}
-
-				ch <- either.ErrorOf[string](errors.WithStack(err))
-				break
+			select {
+			case <-ctx.Done():
+				out.PushError(errors.WithStack(ctx.Err()))
+				return
+			default:
 			}
-			if len(line) == 0 {
+
+			line, _, err := buf.ReadLine()
+			switch {
+			case err == io.EOF:
+				return
+			case err != nil:
+				out.PushError(errors.WithStack(err))
+				return
+			case len(line) == 0:
 				continue
 			}
 
-			ch <- either.Of[string](string(line))
+			out.PushValue(string(line))
 		}
-	}()
-
-	return ch
+	})
 }

@@ -7,9 +7,10 @@ import (
 	"flag"
 	"os"
 
-	"github.com/Durun/m2kt/internal/impl/file"
+	"github.com/pkg/errors"
+	"google.golang.org/api/youtube/v3"
+
 	"github.com/Durun/m2kt/internal/impl/sqlite"
-	"github.com/Durun/m2kt/internal/util/either"
 )
 
 func dumpChannelCmd(ctx context.Context, args []string) error {
@@ -32,15 +33,14 @@ func dumpChannelCmd(ctx context.Context, args []string) error {
 	defer db.Close()
 
 	store := sqlite.NewRawStore(db)
+	channels := store.DumpChannels(ctx)
+	defer channels.RequestClose()
 
-	for values := range either.Chunked(store.DumpChannels(ctx), 1000) {
-		if values.Err != nil {
-			return values.Err
-		}
-
-		if err := file.WriteJSONs(encoder, values.Value); err != nil {
-			return err
-		}
+	errs := channels.ForEachCloseOnError(func(channel *youtube.Channel) error {
+		return errors.WithStack(encoder.Encode(channel))
+	})
+	if len(errs) > 0 {
+		return errs[0]
 	}
 
 	return nil

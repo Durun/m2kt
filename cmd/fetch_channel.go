@@ -15,7 +15,7 @@ import (
 	"github.com/Durun/m2kt/internal/impl/file"
 	"github.com/Durun/m2kt/internal/impl/sqlite"
 	"github.com/Durun/m2kt/internal/impl/yt"
-	"github.com/Durun/m2kt/internal/util/either"
+	"github.com/Durun/m2kt/pkg/chu"
 )
 
 func fetchChannelCmd(ctx context.Context, args []string) error {
@@ -40,9 +40,6 @@ func fetchChannelCmd(ctx context.Context, args []string) error {
 		return err
 	}
 
-	// newline delimited channelIDs
-	channelIDReader := file.NewLineReader(os.Stdin)
-
 	db, err := sqlite.NewSQLiteDB(*dbFilePath)
 	if err != nil {
 		return errors.WithStack(err)
@@ -61,16 +58,21 @@ func fetchChannelCmd(ctx context.Context, args []string) error {
 		return errors.WithStack(err)
 	}
 
+	// newline delimited channelIDs
+	channelIDs := file.NewLineReader(os.Stdin)
+	defer channelIDs.RequestClose()
+
 	queryChannelIDs := make([]string, 0)
-	for channelIDs := range either.Chunked(channelIDReader.Lines(), 1000) {
-		if channelIDs.Err != nil {
-			return channelIDs.Err
+	for chunk := range channelIDs.Chunked(1000) {
+		channelIDs, err := chunk.Get()
+		if err != nil {
+			return err
 		}
 
 		if *overwrite {
-			queryChannelIDs = append(queryChannelIDs, channelIDs.Value...)
+			queryChannelIDs = append(queryChannelIDs, channelIDs...)
 		} else {
-			ids, err := store.ListChannelIDs(ctx, channelIDs.Value)
+			ids, err := store.ListChannelIDs(ctx, channelIDs)
 			if err != nil {
 				return err
 			}
@@ -79,7 +81,7 @@ func fetchChannelCmd(ctx context.Context, args []string) error {
 				duplicatedIDs[id] = struct{}{}
 			}
 
-			for _, id := range channelIDs.Value {
+			for _, id := range channelIDs {
 				if _, ok := duplicatedIDs[id]; !ok {
 					queryChannelIDs = append(queryChannelIDs, id)
 				}
@@ -90,18 +92,20 @@ func fetchChannelCmd(ctx context.Context, args []string) error {
 		queryChannelIDs = queryChannelIDs[:*limit]
 	}
 
-	var fetchCount int
-	for channels := range either.Chunked(yt.FetchChannels(service, queryChannelIDs), 1000) {
-		if channels.Err != nil {
-			return channels.Err
-		}
+	channels := yt.FetchChannels(service, chu.FromSlice(queryChannelIDs))
+	defer channels.RequestClose()
 
-		fetchCount += len(channels.Value)
-		if err := store.WriteChannels(ctx, time.Now(), channels.Value); err != nil {
-			return err
-		}
+	var fetchCount int
+	errs := chu.Chunked(channels, 1000).ForEachCloseOnError(func(channels []*youtube.Channel) error {
+		fetchCount += len(channels)
+		return store.WriteChannels(ctx, time.Now(), channels)
+	})
+	if 0 < fetchCount {
+		slog.Info("fetched channels into DB", slog.Int("query", len(queryChannelIDs)), slog.Int("fetch", fetchCount))
 	}
-	slog.Info("fetched channels into DB", slog.Int("query", len(queryChannelIDs)), slog.Int("fetch", fetchCount))
+	if 0 < len(errs) {
+		return errors.WithStack(errs[0])
+	}
 
 	return nil
 }

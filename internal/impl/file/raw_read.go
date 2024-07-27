@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"os"
 
+	"github.com/pkg/errors"
 	"google.golang.org/api/youtube/v3"
 
-	"github.com/Durun/m2kt/internal/util/either"
+	"github.com/Durun/m2kt/pkg/chu"
 )
 
 func NewRawReader(file *os.File) *RawReader {
@@ -20,22 +21,23 @@ type RawReader struct {
 	decoder *json.Decoder
 }
 
-func (r *RawReader) DumpVideos(_ context.Context) <-chan either.Either[*youtube.SearchResult] {
-	ch := make(chan either.Either[*youtube.SearchResult])
-
-	go func() {
+func (r *RawReader) DumpVideos(ctx context.Context) chu.ReadChan[*youtube.SearchResult] {
+	return chu.GenerateContext(ctx, func(ctx context.Context, out chu.WriteChan[*youtube.SearchResult]) {
 		for r.decoder.More() {
-			video := new(youtube.SearchResult)
-			if err := r.decoder.Decode(video); err != nil {
-				ch <- either.ErrorOf[*youtube.SearchResult](err)
-				break
+			select {
+			case <-ctx.Done():
+				out.PushError(errors.WithStack(ctx.Err()))
+				return
+			default:
 			}
 
-			ch <- either.Of(video)
+			video := new(youtube.SearchResult)
+			if err := r.decoder.Decode(video); err != nil {
+				out.PushError(err)
+				return
+			}
+
+			out.PushValue(video)
 		}
-
-		close(ch)
-	}()
-
-	return ch
+	})
 }

@@ -11,7 +11,7 @@ import (
 	"google.golang.org/api/youtube/v3"
 
 	"github.com/Durun/m2kt/internal/util"
-	"github.com/Durun/m2kt/internal/util/either"
+	"github.com/Durun/m2kt/pkg/chu"
 )
 
 func NewRawStore(db *sql.DB) *RawStore {
@@ -106,16 +106,13 @@ func (s *RawStore) WriteVideos(ctx context.Context, videos []*youtube.SearchResu
 	return err
 }
 
-func (s *RawStore) DumpVideos(ctx context.Context) <-chan either.Either[*youtube.SearchResult] {
-	ch := make(chan either.Either[*youtube.SearchResult])
-
-	go func() {
+func (s *RawStore) DumpVideos(ctx context.Context) chu.ReadChan[*youtube.SearchResult] {
+	return chu.GenerateContext(ctx, func(ctx context.Context, out chu.WriteChan[*youtube.SearchResult]) {
 		rows, err := util.DoExpr(ctx, s.db.QueryContext, superbasic.Compile(`
-		SELECT json FROM videos_raw`,
+			SELECT json FROM videos_raw`,
 		))
 		if err != nil {
-			ch <- either.ErrorOf[*youtube.SearchResult](err)
-			close(ch)
+			out.PushError(err)
 			return
 		}
 		defer rows.Close()
@@ -123,23 +120,19 @@ func (s *RawStore) DumpVideos(ctx context.Context) <-chan either.Either[*youtube
 		for rows.Next() {
 			var videoJson string
 			if err := rows.Scan(&videoJson); err != nil {
-				ch <- either.ErrorOf[*youtube.SearchResult](err)
+				out.PushError(errors.WithStack(err))
 				break
 			}
 
 			video := new(youtube.SearchResult)
 			if err := json.Unmarshal([]byte(videoJson), video); err != nil {
-				ch <- either.ErrorOf[*youtube.SearchResult](err)
+				out.PushError(errors.WithStack(err))
 				break
 			}
 
-			ch <- either.Of(video)
+			out.PushValue(video)
 		}
-
-		close(ch)
-	}()
-
-	return ch
+	})
 }
 
 func (s *RawStore) WriteChannels(ctx context.Context, fetchedAt time.Time, channels []*youtube.Channel) error {
@@ -171,16 +164,13 @@ func (s *RawStore) WriteChannels(ctx context.Context, fetchedAt time.Time, chann
 	return err
 }
 
-func (s *RawStore) DumpChannels(ctx context.Context) <-chan either.Either[*youtube.Channel] {
-	ch := make(chan either.Either[*youtube.Channel])
-
-	go func() {
+func (s *RawStore) DumpChannels(ctx context.Context) chu.ReadChan[*youtube.Channel] {
+	return chu.GenerateContext(ctx, func(ctx context.Context, out chu.WriteChan[*youtube.Channel]) {
 		rows, err := util.DoExpr(ctx, s.db.QueryContext, superbasic.Compile(`
 		SELECT json FROM channels_raw`,
 		))
 		if err != nil {
-			ch <- either.ErrorOf[*youtube.Channel](err)
-			close(ch)
+			out.PushError(errors.WithStack(err))
 			return
 		}
 		defer rows.Close()
@@ -188,23 +178,19 @@ func (s *RawStore) DumpChannels(ctx context.Context) <-chan either.Either[*youtu
 		for rows.Next() {
 			var jsonStr string
 			if err := rows.Scan(&jsonStr); err != nil {
-				ch <- either.ErrorOf[*youtube.Channel](err)
+				out.PushError(errors.WithStack(err))
 				break
 			}
 
 			value := new(youtube.Channel)
 			if err := json.Unmarshal([]byte(jsonStr), value); err != nil {
-				ch <- either.ErrorOf[*youtube.Channel](err)
+				out.PushError(errors.WithStack(err))
 				break
 			}
 
-			ch <- either.Of(value)
+			out.PushValue(value)
 		}
-
-		close(ch)
-	}()
-
-	return ch
+	})
 }
 
 func (s *RawStore) ListChannelIDs(ctx context.Context, channelIDs []string) ([]string, error) {

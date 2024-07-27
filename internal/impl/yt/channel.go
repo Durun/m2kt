@@ -3,13 +3,13 @@ package yt
 import (
 	"log/slog"
 
+	"github.com/pkg/errors"
 	"google.golang.org/api/youtube/v3"
 
-	"github.com/Durun/m2kt/internal/util/either"
-	"github.com/Durun/m2kt/internal/util/slice"
+	"github.com/Durun/m2kt/pkg/chu"
 )
 
-func FetchChannels(service *youtube.Service, channelIDs []string) <-chan either.Either[*youtube.Channel] {
+func FetchChannels(service *youtube.Service, channelIDs chu.ReadChan[string]) chu.ReadChan[*youtube.Channel] {
 	baseCall := service.Channels.List([]string{
 		"id",
 		"snippet",
@@ -18,24 +18,16 @@ func FetchChannels(service *youtube.Service, channelIDs []string) <-chan either.
 		"status",
 	})
 
-	ch := make(chan either.Either[*youtube.Channel])
-	go func() {
-		defer close(ch)
-
-		for _, channelIDs := range slice.Chunked(channelIDs, 50) {
-			call := *baseCall
-			response, err := call.Id(channelIDs...).MaxResults(int64(len(channelIDs))).Do()
-			slog.Info("called Channels:list")
-			if err != nil {
-				ch <- either.ErrorOf[*youtube.Channel](err)
-				break
-			}
-
-			for _, item := range response.Items {
-				ch <- either.Of(item)
-			}
+	chunks := chu.Map(chu.Chunked(channelIDs, 50), func(channelIDs []string) ([]*youtube.Channel, error) {
+		call := *baseCall
+		response, err := call.Id(channelIDs...).MaxResults(int64(len(channelIDs))).Do()
+		slog.Info("called Channels:list")
+		if err != nil {
+			return nil, errors.WithStack(err)
 		}
-	}()
 
-	return ch
+		return response.Items, nil
+	})
+
+	return chu.Flatten(chunks)
 }

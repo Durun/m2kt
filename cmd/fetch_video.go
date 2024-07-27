@@ -12,7 +12,7 @@ import (
 
 	"github.com/Durun/m2kt/internal/impl/sqlite"
 	"github.com/Durun/m2kt/internal/impl/yt"
-	"github.com/Durun/m2kt/internal/util/either"
+	"github.com/Durun/m2kt/pkg/chu"
 )
 
 func fetchVideoCmd(ctx context.Context, args []string) error {
@@ -57,36 +57,37 @@ func fetchVideoCmd(ctx context.Context, args []string) error {
 		return errors.WithStack(err)
 	}
 
-	videos := yt.FetchVideos(service, yt.FetchVideosOptions{
+	videoCh := yt.FetchVideos(service, yt.FetchVideosOptions{
 		Q:          *query,
 		RegionCode: *regionCode,
 		EventType:  *eventType,
 		Count:      *count,
 	})
-
-	for videos := range either.Chunked(videos, 100) {
-		if videos.Err != nil {
-			return errors.WithStack(videos.Err)
-		}
-
-		videoIDs := make([]string, 0, len(videos.Value))
-		for _, video := range videos.Value {
+	defer videoCh.RequestClose()
+	errs := chu.Chunked(videoCh, 100).ForEachCloseOnError(func(videos []*youtube.SearchResult) error {
+		videoIDs := make([]string, 0, len(videos))
+		for _, video := range videos {
 			videoIDs = append(videoIDs, video.Id.VideoId)
 		}
 		updateCount, err := store.CountVideos(ctx, videoIDs)
 		if err != nil {
 			return errors.WithStack(err)
 		}
-		insertCount := len(videos.Value) - updateCount
+		insertCount := len(videos) - updateCount
 
-		if err := store.WriteVideos(ctx, videos.Value); err != nil {
+		if err := store.WriteVideos(ctx, videos); err != nil {
 			return errors.WithStack(err)
 		}
 
 		slog.Info("inserted videos into DB", slog.Int("insert", insertCount), slog.Int("update", updateCount))
 		if 0 < updateCount {
-			break
+			videoCh.RequestClose()
 		}
+
+		return nil
+	})
+	if 0 < len(errs) {
+		return errors.WithStack(errs[0])
 	}
 
 	return nil

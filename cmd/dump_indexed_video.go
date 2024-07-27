@@ -9,9 +9,8 @@ import (
 
 	"github.com/pkg/errors"
 
-	"github.com/Durun/m2kt/internal/impl/file"
+	"github.com/Durun/m2kt/internal/entity"
 	"github.com/Durun/m2kt/internal/impl/sqlite"
-	"github.com/Durun/m2kt/internal/util/either"
 )
 
 func dumpIndexedVideoCmd(ctx context.Context, args []string) error {
@@ -34,16 +33,16 @@ func dumpIndexedVideoCmd(ctx context.Context, args []string) error {
 		return errors.WithStack(err)
 	}
 	defer db.Close()
+
 	store := sqlite.NewIndexedStore(db)
+	videos := store.DumpVideos(ctx, *where, *orderby)
+	defer videos.RequestClose()
 
-	for videos := range either.Chunked(store.DumpVideos(ctx, *where, *orderby), 1000) {
-		if videos.Err != nil {
-			return videos.Err
-		}
-
-		if err := file.WriteJSONs(encoder, videos.Value); err != nil {
-			return err
-		}
+	errs := videos.ForEachCloseOnError(func(video entity.Video) error {
+		return errors.WithStack(encoder.Encode(video))
+	})
+	if len(errs) > 0 {
+		return errs[0]
 	}
 
 	return nil
